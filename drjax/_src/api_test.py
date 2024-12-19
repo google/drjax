@@ -14,12 +14,13 @@
 
 import functools
 
+from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 from drjax._src import api
 import jax
 from jax import numpy as jnp
 import numpy as np
-import tensorflow as tf
 
 
 @functools.wraps(api.drjax_program)
@@ -30,7 +31,7 @@ def drjax_program(*, placements):
 @parameterized.named_parameters(
     ("clients_placed", "clients"), ("XY_placed", "XY")
 )
-class ApiTest(tf.test.TestCase):
+class ApiTest(absltest.TestCase):
 
   def test_sharded_broadcast(self, placement_name):
 
@@ -47,7 +48,7 @@ class ApiTest(tf.test.TestCase):
           jax.device_put(jnp.ones(shape=[8, 8]), arg_sharding)
       )
 
-    self.assertAllClose(result, jnp.ones(shape=[100, 8, 8]))
+    chex.assert_trees_all_close(result, jnp.ones(shape=[100, 8, 8]))
     # No clients dimension in the mesh, we don't lay out the clients along that
     # nonexistent dimension, but rather replicate them. Notice that we don't
     # need to specify the sharding to DrJAX; it should be inferred by GSPMD.
@@ -199,5 +200,10 @@ class ApiTest(tf.test.TestCase):
       trigger_error(jnp.asarray([0]))
 
 
+# This allows us to test sharding behavior across multiple devices.
+def setUpModule():
+  chex.set_n_cpu_devices(8)
+
+
 if __name__ == "__main__":
-  tf.test.main()
+  absltest.main()

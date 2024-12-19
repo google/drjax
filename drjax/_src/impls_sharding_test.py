@@ -20,6 +20,7 @@ import unittest
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 from drjax._src import impls
 import jax
 from jax import numpy as jnp
@@ -356,6 +357,7 @@ class MapFnShardingTest(parameterized.TestCase):
   @parameterized.parameters(True, False)
   def test_map_of_shard_map_fully_shards_result(self, mesh_as_context):
     arg_spec = PSpec(_DATA_AXIS)
+
     @functools.partial(
         shard_map,
         mesh=self._global_mesh,
@@ -399,6 +401,11 @@ class MapFnShardingTest(parameterized.TestCase):
         sharding.shard_shape(result.shape),
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
+
+
+# This allows us to test sharding behavior across multiple devices.
+def setUpModule():
+  chex.set_n_cpu_devices(8)
 
 
 if __name__ == '__main__':

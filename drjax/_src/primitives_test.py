@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 from drjax._src import impls
 from drjax._src import primitives
 import jax
 from jax import numpy as jnp
-import tensorflow as tf
 
 
 def _jaxpr_has_primitive(jaxpr, prim_name: str):
@@ -31,7 +32,7 @@ def _jaxpr_has_primitive(jaxpr, prim_name: str):
   return False
 
 
-class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
+class PrimitivesActingOnArraysTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
@@ -46,17 +47,19 @@ class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
   def test_broadcast_clients_evaluation(self):
     fn = self._primdefs['broadcast_clients']
     # Check that this function is callable.
-    self.assertAllClose(fn(jnp.array(1.0)), jnp.ones(shape=[self._n_clients]))
+    chex.assert_trees_all_close(
+        fn(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
+    )
     # Check that it's jittable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jit(fn)(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
     )
     # Check that its forward-diffable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacfwd(fn)(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
     )
     # Also that it's reverse-diffable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacrev(fn)(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
     )
 
@@ -73,17 +76,19 @@ class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
     fn = self._primdefs['sum_from_clients']
     clients_ones = jnp.ones(shape=[self._n_clients, 1])
     # Check that this function is callable.
-    self.assertAllClose(fn(clients_ones), jnp.array([1.0 * self._n_clients]))
+    chex.assert_trees_all_close(
+        fn(clients_ones), jnp.array([1.0 * self._n_clients])
+    )
     # Check that it's jittable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jit(fn)(clients_ones), jnp.array([1.0 * self._n_clients])
     )
     # Check that its forward-diffable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacfwd(fn)(clients_ones), jnp.ones(shape=[1, 100, 1])
     )
     # Check that its reverse-diffable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacrev(fn)(clients_ones), jnp.ones(shape=[1, self._n_clients, 1])
     )
 
@@ -95,13 +100,13 @@ class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
       return fn(broadcasted_x)
 
     # This thing corresponds to fwd-mode AD in our paper.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacfwd(_broadcast_then_sum)(jnp.array([1.0])),
         jnp.array([[1.0 * self._n_clients]]),
     )
 
     # And here's reverse-ad.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacrev(_broadcast_then_sum)(jnp.array([1.0])),
         jnp.array([[1.0 * self._n_clients]]),
     )
@@ -120,11 +125,11 @@ class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
     fn = self._primdefs['mean_from_clients']
     clients_ones = jnp.ones(shape=[self._n_clients, 1])
     # Check that this function is callable.
-    self.assertAllClose(fn(clients_ones), jnp.array([1.0]))
+    chex.assert_trees_all_close(fn(clients_ones), jnp.array([1.0]))
     # Check that it's jittable.
-    self.assertAllClose(jax.jit(fn)(clients_ones), jnp.array([1.0]))
+    chex.assert_trees_all_close(jax.jit(fn)(clients_ones), jnp.array([1.0]))
     # Check that its forward-diffable.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacfwd(fn)(clients_ones),
         1 / self._n_clients * jnp.ones(shape=[1, self._n_clients, 1]),
     )
@@ -137,11 +142,11 @@ class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
       return fn(broadcasted_x)
 
     # Again, let's do the forward-mode, reverse-mode checks.
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacfwd(_broadcast_then_sum)(jnp.array([1.0])),
         jnp.array([[1.0]]),
     )
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jax.jacrev(_broadcast_then_sum)(jnp.array([1.0])),
         jnp.array([[1.0]]),
     )
@@ -193,10 +198,10 @@ class PrimitivesActingOnArraysTest(tf.test.TestCase, parameterized.TestCase):
       return y
 
     jac = jax.jacrev(ignore_prim_result)
-    self.assertAllClose(
+    chex.assert_trees_all_close(
         jac(arg_fn(self._n_clients)), result_fn(self._n_clients)
     )
 
 
 if __name__ == '__main__':
-  tf.test.main()
+  absltest.main()

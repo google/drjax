@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from absl.testing import absltest
 import chex
 from drjax._src import impls
 import jax
 from jax import numpy as jnp
-import tensorflow as tf
 
 
-class ImplsTest(tf.test.TestCase):
+class ImplsTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
@@ -84,4 +84,4 @@ class ImplsTest(tf.test.TestCase):
 
 
 if __name__ == '__main__':
-  tf.test.main()
+  absltest.main()
