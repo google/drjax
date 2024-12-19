@@ -1,0 +1,66 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Documentation for this file format can be found at:
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+
+name: Test Project
+
+on:  # yamllint disable-line rule:truthy
+
+  # presubmit
+  pull_request:
+    branches:
+      - main
+
+  # manual
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  test-project:
+    name: Linux PY ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+    steps:
+
+    - name: Checkout repository
+      uses: actions/checkout@v4.2.2
+
+    - name: Setup Python
+      uses: actions/setup-python@v5.3.0
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip --version
+        pip install --upgrade -r requirements.txt
+        pip freeze
+
+    - name: Test project with unittest
+      run: |
+        python -m unittest discover \
+            --start-directory "drjax" \
+            --pattern "*_test.py"
