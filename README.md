@@ -21,28 +21,15 @@ mapping capabilities and primitive extensions of JAX.
 For details on DrJAX's system design, check out our
 [paper](https://arxiv.org/abs/2403.07128).
 
-## Installing
-
-```
-pip install --upgrade google-fax
-```
-
-## Building a new wheel
-
-Run `python -m build` to build a new `google-fax` wheel.
-
-## Citing FAX
+## Citation
 
 To cite this repository, please use the following BibTeX citation:
 
 ```
-@misc{rush2024fax,
-      title={FAX: Scalable and Differentiable Federated Primitives in JAX},
-      author={Keith Rush and Zachary Charles and Zachary Garrett},
-      year={2024},
-      eprint={2403.07128},
-      archivePrefix={arXiv},
-      primaryClass={cs.DC}
+@inproceedings{rush2024drjax,
+  title={DrJAX: Scalable and Differentiable MapReduce Primitives in JAX},
+  author={Rush, J Keith and Charles, Zachary and Garrett, Zachary and Augenstein, Sean and Mitchell, Nicole Elyse},
+  booktitle={2nd Workshop on Advancing Neural Network Training: Computational Efficiency, Scalability, and Resource Optimization (WANT@ ICML 2024)}
 }
 ```
 
