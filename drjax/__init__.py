@@ -18,9 +18,7 @@ import sys as _sys
 
 from drjax._src import api as _api
 
-# When changing this, also move the unreleased changes in CHANGELOG.md to the
-# associated version.
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 
 # Import the public API.
 broadcast = _api.broadcast
