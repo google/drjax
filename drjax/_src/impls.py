@@ -146,7 +146,12 @@ class PlacedComputations:
     def single_arg_broadcast(x):
       replicated_tensor = jnp.tile(x, reps=[n_elements] + [1] * len(x.shape))
       if mesh is None:
-        # No sharding expected, don't worry about it.
+        logging.warning(
+            'No mesh found; defaulting to fully replicated broadcast and'
+            ' *NOT* adding sharding constraints over the requested placement'
+            ' axis %s.',
+            placement,
+        )
         return replicated_tensor
       else:
 
@@ -275,7 +280,7 @@ class PlacedComputations:
           'No mesh containing axis name %s found; defaulting to standard vmap.'
           ' Mesh contains names: %s',
           placement,
-          mesh.axis_names if mesh is not None else '',
+          mesh.axis_names if mesh is not None else 'None',
       )
       # Users should be free to use whatever mesh their model needs without
       # _necessarily_ registering a mesh-dimension for every placement with
