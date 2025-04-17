@@ -60,6 +60,8 @@ class OperatorUndefinedError(Exception):
 # high-performance manner.
 def broadcast(
     x: _NestedUnplacedTensor,
+    *,
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
 ) -> _NestedPlacedTensor:
   """Broadcasts its input to the active placement.
 
@@ -68,6 +70,8 @@ def broadcast(
 
   Args:
     x: A structure of arrays to be broadcast.
+    mesh: Optional mesh for sharding constraints. If `None` then the JAX global
+      mesh will be used.
 
   Returns:
     A structure of arrays broadcast to the placement dimension (i.e., each array
@@ -213,10 +217,9 @@ def _replace_api(
       reduce_weighted_mean, reduce_weighted_mean_impl
   )
 
-  def broadcast_impl(x):
-
+  def broadcast_impl(x, *, mesh=None):
     return jax.tree_util.tree_map(
-        prim_computations[f'broadcast_{placement}'], x
+        lambda x: prim_computations[f'broadcast_{placement}'](x, mesh=mesh), x
     )
 
   api.broadcast = _implement_api(broadcast, broadcast_impl)

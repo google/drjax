@@ -31,6 +31,7 @@ class BroadcastType(Protocol):
   def __call__(
       self,
       x: jnp.ndarray,
+      mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
   ) -> jnp.ndarray:
     ...
 
@@ -44,8 +45,8 @@ def _define_broadcast_prim(
   """Defines and returns broadcast ptimitive and associated binding."""
   broadcast_p = extended_core.Primitive(broadcast_name)  # Create the primitive
 
-  def broadcast_prim_fn(x):
-    return broadcast_p.bind(x)
+  def broadcast_prim_fn(x, *, mesh=None):
+    return broadcast_p.bind(x, mesh=mesh)
 
   return (broadcast_p, broadcast_prim_fn)
 
@@ -78,7 +79,8 @@ def _register_broadcast_impls(
       broadcast targets.
   """
 
-  def broadcast_abstract_eval(xs):
+  def broadcast_abstract_eval(xs, *, mesh):
+    del mesh
     return core.ShapedArray((n_elements,) + xs.shape, xs.dtype)
 
   # Abstract eval rule.
@@ -90,15 +92,16 @@ def _register_broadcast_impls(
       broadcast_p, mlir.lower_fun(broadcast_array_eval, multiple_results=False)
   )
 
-  def broadcast_jvp(primals_in, tangents_in):
-    primals_out = broadcast_prim_fn(*primals_in)
-    tangents_out = broadcast_prim_fn(*tangents_in)
+  def broadcast_jvp(primals_in, tangents_in, mesh):
+    primals_out = broadcast_prim_fn(*primals_in, mesh=mesh)
+    tangents_out = broadcast_prim_fn(*tangents_in, mesh=mesh)
     return primals_out, tangents_out
 
   # Registering JVP should allow forward AD.
   ad.primitive_jvps[broadcast_p] = broadcast_jvp
 
-  def broadcast_vjp(cotangents_out, primals_in):
+  def broadcast_vjp(cotangents_out, primals_in, mesh):
+    del mesh
     if isinstance(cotangents_out, jax.interpreters.ad.Zero):
       # We are differerentiating back through a broadcast; the incoming value,
       # therefore, has the right shape and dtype for the Zero we generate.
@@ -109,9 +112,9 @@ def _register_broadcast_impls(
 
   ad.primitive_transposes[broadcast_p] = broadcast_vjp
 
-  def _batch_broadcast(xs, batched_shape):
+  def _batch_broadcast(xs, batched_shape, mesh):
     # We inserted clients dimension in front, so batch dim went down one.
-    return broadcast_prim_fn(*xs), batched_shape[0] + 1
+    return broadcast_prim_fn(*xs, mesh=mesh), batched_shape[0] + 1
 
   # Make sure this can also be batched / mapped. This happens when dispatching
   # forward AD, I think.
@@ -238,8 +241,8 @@ def _define_and_register_prims_for_placement(
   primdef_dict[sum_name] = sum_p
   primdef_dict[mean_name] = mean_p
 
-  def broadcast_array_eval(x):
-    return impl_defs.broadcast_to_placement(x, placement_str)
+  def broadcast_array_eval(x, *, mesh):
+    return impl_defs.broadcast_to_placement(x, placement_str, mesh)
 
   _register_broadcast_impls(
       broadcast_p,

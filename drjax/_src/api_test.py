@@ -57,6 +57,53 @@ class ApiTest(absltest.TestCase):
         result.sharding, jax.sharding.NamedSharding(mesh, expected_result_pspec)
     )
 
+  def test_sharded_broadcast_mesh_arg(self, placement_name):
+
+    mesh = jax.sharding.Mesh(np.array(jax.devices()), ("some_axis",))
+
+    @drjax_program(placements={placement_name: 100})
+    def broadcast_val(val):
+      return api.broadcast(val, mesh=mesh)
+
+    arg_sharding = jax.sharding.NamedSharding(
+        mesh, jax.sharding.PartitionSpec("some_axis")
+    )
+    result = broadcast_val(jax.device_put(jnp.ones(shape=[8, 8]), arg_sharding))
+
+    chex.assert_trees_all_close(result, jnp.ones(shape=[100, 8, 8]))
+    # No clients dimension in the mesh, we don't lay out the clients along that
+    # nonexistent dimension, but rather replicate them. Notice that we don't
+    # need to specify the sharding to DrJAX; it should be inferred by GSPMD.
+    expected_result_pspec = jax.sharding.PartitionSpec(None, "some_axis")
+    self.assertEqual(
+        result.sharding, jax.sharding.NamedSharding(mesh, expected_result_pspec)
+    )
+
+  def test_fully_sharded_broadcast_mesh_arg(self, placement_name):
+
+    mesh = jax.sharding.Mesh(
+        np.array(jax.devices()).reshape([4, 2]), (placement_name, "some_axis")
+    )
+
+    @drjax_program(placements={placement_name: 8})
+    def broadcast_val(val):
+      return api.broadcast(val, mesh=mesh)
+
+    arg_sharding = jax.sharding.NamedSharding(
+        mesh, jax.sharding.PartitionSpec("some_axis")
+    )
+
+    result = broadcast_val(jax.device_put(jnp.ones(shape=[8, 8]), arg_sharding))
+
+    chex.assert_trees_all_close(result, jnp.ones(shape=[8, 8, 8]))
+    # The result should be sharded across the placement_name axis.
+    expected_result_pspec = jax.sharding.PartitionSpec(
+        placement_name, "some_axis"
+    )
+    self.assertEqual(
+        result.sharding, jax.sharding.NamedSharding(mesh, expected_result_pspec)
+    )
+
   def test_temp_sens_example(self, placement_name):
     def one_if_over(threshold, value):
       return jax.lax.cond(value > threshold, lambda: 1.0, lambda: 0.0)
