@@ -20,8 +20,8 @@ classifiers = [
 keywords = ["parallel", "mapreduce", "machine", "learning", "jax"]
 dependencies = [
     'absl-py>=1.0,<3.0',
-    'jax>=0.4.24,<0.6.0',
-    'jaxlib>=0.4.24,<0.6.0',
+    'jax>=0.4.24',
+    'jaxlib>=0.4.24',
 ]
 dynamic = ['version']
 
