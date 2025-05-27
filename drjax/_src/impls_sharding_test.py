@@ -99,6 +99,29 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     # replicated.
     self.assertTrue(sharding.is_fully_replicated)
 
+  def test_broadcast_clients_with_jax_use_mesh(self):
+    global_mesh = create_global_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE], [_CLIENTS_AXIS, _DATA_AXIS]
+    )
+    arg = jnp.zeros(shape=[_DATA_SIZE])
+    with jax.sharding.use_mesh(global_mesh):
+      result = self._comp_factory.broadcast_to_placement(
+          arg,
+          _CLIENTS_AXIS,
+      )
+    self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
+    sharding = result.sharding
+    # If this sharding were fully replicated, we would be *replicating* the data
+    # on each chip, rather than putting half of the clients' broadcasted arrays
+    # on one set of client chips and half on the other.
+    self.assertFalse(sharding.is_fully_replicated)
+    # Each shard should host half the clients, but the arg's original dimension
+    # should be replicated.
+    self.assertEqual(
+        sharding.shard_shape(result.shape),
+        (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
+    )
+
   @parameterized.parameters(True, False)
   def test_broadcast_clients_shards_along_clients(self, mesh_as_context):
     global_mesh = create_global_mesh(
