@@ -47,9 +47,11 @@ def call_jaxpr(fn, arg):
 
 # TODO(b/366437841): Remove use of pxla.thread_resources.env.physical_mesh,
 # which is a JAX internal API.
-def _global_mesh() -> jax.sharding.Mesh | None:
+def _global_mesh() -> jax.sharding.Mesh | jax.sharding.AbstractMesh | None:
   """Returns the JAX global mesh if installed, or `None` otherwise."""
-  jax_global_mesh = pxla.thread_resources.env.physical_mesh
+  jax_global_mesh = jax.sharding.get_abstract_mesh()
+  if jax_global_mesh is None or jax_global_mesh.empty:
+    jax_global_mesh = pxla.thread_resources.env.physical_mesh
   return None if jax_global_mesh.empty else jax_global_mesh
 
 
