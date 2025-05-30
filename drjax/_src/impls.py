@@ -47,9 +47,13 @@ def call_jaxpr(fn, arg):
 
 # TODO(b/366437841): Remove use of pxla.thread_resources.env.physical_mesh,
 # which is a JAX internal API.
-def _global_mesh() -> jax.sharding.Mesh | jax.sharding.AbstractMesh | None:
+def _global_mesh(
+    use_abstract: bool,
+) -> jax.sharding.Mesh | jax.sharding.AbstractMesh | None:
   """Returns the JAX global mesh if installed, or `None` otherwise."""
-  jax_global_mesh = jax.sharding.get_abstract_mesh()
+  jax_global_mesh = None
+  if use_abstract:
+    jax_global_mesh = jax.sharding.get_abstract_mesh()
   if jax_global_mesh is None or jax_global_mesh.empty:
     jax_global_mesh = pxla.thread_resources.env.physical_mesh
   return None if jax_global_mesh.empty else jax_global_mesh
@@ -93,8 +97,10 @@ class PlacedComputations:
   def __init__(
       self,
       placements_to_n_elements: Mapping[str, int],
+      use_abstract_mesh: bool = True,
   ):
     self._placements_to_n_elements = placements_to_n_elements
+    self._use_abstract_mesh = use_abstract_mesh
 
   def broadcast_to_placement(
       self,
@@ -130,7 +136,7 @@ class PlacedComputations:
       A logically tiled array along the zeroth axis, as described above.
     """
     if mesh is None:
-      mesh = _global_mesh()
+      mesh = _global_mesh(self._use_abstract_mesh)
 
     arg = jnp.array(arg)
     n_elements = self._placements_to_n_elements[placement]
@@ -240,7 +246,7 @@ class PlacedComputations:
       requirements specified above.
     """
     if mesh is None:
-      mesh = _global_mesh()
+      mesh = _global_mesh(self._use_abstract_mesh)
 
     def _constrain_at_placement_with_slices_like(x, y):
       pspec = P(placement, *([P.UNCONSTRAINED] * (len(x.shape) - 1)))
