@@ -32,6 +32,9 @@ reduce_weighted_mean = _api.reduce_weighted_mean
 @_functools.wraps(_api.drjax_program)
 def program(**kwargs):
   """A decorator enabling calling the DrJAX API."""
+  # TODO(b/421499635): Remove this API hole once we diagnose and fix clipping
+  # ooming.
+  use_abstract_mesh = kwargs.pop('use_abstract_mesh', True)
   try:
     [(placement, value)] = kwargs.items()  # pylint: disable=unbalanced-dict-unpacking
   except ValueError as e:
@@ -50,10 +53,13 @@ def program(**kwargs):
       )
       # pylint: enable=f-string-without-interpolation
     return _api.drjax_program(
-        placements=value, self_module=_sys.modules[__name__]
+        placements=value,
+        self_module=_sys.modules[__name__],
+        use_abstract_mesh=use_abstract_mesh,
     )
   else:
     return _api.drjax_program(
         placements=kwargs,
         self_module=_sys.modules[__name__],
+        use_abstract_mesh=use_abstract_mesh,
     )
