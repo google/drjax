@@ -89,7 +89,7 @@ def _register_broadcast_impls(
   broadcast_p.def_impl(broadcast_array_eval)
   # Lowering rule to MLIR.
   mlir.register_lowering(
-      broadcast_p, mlir.lower_fun(broadcast_array_eval, multiple_results=False)
+      broadcast_p, mlir.lower_fun(broadcast_array_eval, multiple_results=False),
   )
 
   def broadcast_jvp(primals_in, tangents_in, mesh):
@@ -168,9 +168,17 @@ def _register_single_arg_agg_impls(
   # Concrete eval rule
   agg_p.def_impl(agg_array_eval)
   # Lowering rule to MLIR.
+  kwargs = {}
+  # TODO(krush): The mean primitive is buggy: if passed an integer input, its
+  # abstract eval rule will claim to return an integer output, but its eval rule
+  # will return a float output. Fix this and remove the cacheable=False, which
+  # works around the bug.
+  if jax.version.__version_info__ >= (0, 7):
+    kwargs['cacheable'] = False
   mlir.register_lowering(
       agg_p,
       mlir.lower_fun(agg_array_eval, multiple_results=False),
+      **kwargs
   )
 
   def agg_jvp(primals_in, tangents_in):
