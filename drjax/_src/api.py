@@ -264,7 +264,7 @@ def drjax_program(
       tracing.
     use_abstract_mesh: Whether to optionally search for jax's abstract mesh when
       adding drjax sharding constraints (e.g. making use of drjax compatible
-      with jax.sharding.use_mesh).
+      with jax.set_mesh).
 
   Returns:
     A decorated function enabling the calling of the DrJAX API. Interoperable

@@ -104,7 +104,7 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE], [_CLIENTS_AXIS, _DATA_AXIS]
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
-    with jax.sharding.use_mesh(global_mesh):
+    with jax.set_mesh(global_mesh):
       result = self._comp_factory.broadcast_to_placement(
           arg,
           _CLIENTS_AXIS,
