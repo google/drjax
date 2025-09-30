@@ -14,6 +14,7 @@
 """Implementations of MapReduce primitives in JAX."""
 
 from collections.abc import Mapping
+import functools
 from typing import Any
 
 from absl import logging
@@ -43,6 +44,18 @@ def call_jaxpr(fn, arg):
     return fn(*arg)
   else:
     return fn(arg)
+
+
+def _is_all_auto_axis(mesh: jax.sharding.Mesh):
+  if mesh.axis_types is None:
+    return True
+  return all(a == jax.sharding.AxisType.Auto for a in mesh.axis_types)
+
+
+def _is_all_explicit_axis(mesh: jax.sharding.Mesh):
+  if mesh.axis_types is None:
+    return False
+  return all(a == jax.sharding.AxisType.Explicit for a in mesh.axis_types)
 
 
 # TODO(b/366437841): Remove use of pxla.thread_resources.env.physical_mesh,
@@ -91,6 +104,26 @@ def _constrain_if_mesh(
   )
 
 
+def _constrain_alike_if_mesh(
+    mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None,
+    x: PlacedArray,
+    y: UnplacedArray,
+    pspec: jax.sharding.PartitionSpec,
+) -> PlacedArray:
+  """Constrains the non-leading dimensions of `x` to be sharded like `y`."""
+  if mesh is None:
+    return x
+
+  def _shard_slice_like_arg(s):
+    s_sharded, _ = shard_alike(s, y)
+    return s_sharded
+
+  original_dims_constrained = jax.vmap(_shard_slice_like_arg, in_axes=0)(x)
+  return jax.lax.with_sharding_constraint(
+      original_dims_constrained, jax.sharding.NamedSharding(mesh, pspec)
+  )
+
+
 class PlacedComputations:
   """Concrete implementations of MapReduce primitives in JAX."""
 
@@ -102,6 +135,7 @@ class PlacedComputations:
     self._placements_to_n_elements = placements_to_n_elements
     self._use_abstract_mesh = use_abstract_mesh
 
+  @functools.partial(jax.named_call, name='drjax_broadcast')
   def broadcast_to_placement(
       self,
       arg: UnplacedArray,
@@ -141,16 +175,6 @@ class PlacedComputations:
     arg = jnp.array(arg)
     n_elements = self._placements_to_n_elements[placement]
 
-    # Note that this pspec will only result in a sharding constraint defined if
-    # a mesh is installed at tracing time.
-    if _placement_axis_in_mesh(mesh, placement):
-      pspec = P(placement, *([P.UNCONSTRAINED] * len(arg.shape)))
-    else:
-      # Without a placement axis in the mesh, we simply explicitly tell the
-      # compiler that there are no constraints on this tensor. This will leave
-      # the choices in the hands of the compiler.
-      pspec = P(*([P.UNCONSTRAINED] * (len(arg.shape) + 1)))
-
     def single_arg_broadcast(x):
       unconstrained_tensor = jnp.tile(x, reps=[n_elements] + [1] * len(x.shape))
       if mesh is None:
@@ -162,18 +186,35 @@ class PlacedComputations:
         )
         return unconstrained_tensor
       else:
-
-        def _shard_slice_like_arg(s):
-          s_sharded, _ = shard_alike(s, x)
-          return s_sharded
-
-        original_dims_constrained = jax.vmap(_shard_slice_like_arg, in_axes=0)(
-            unconstrained_tensor
-        )
-        fully_constrained = _constrain_if_mesh(
-            mesh, original_dims_constrained, pspec
-        )
-        return fully_constrained
+        if _is_all_auto_axis(mesh):
+          if _placement_axis_in_mesh(mesh, placement):
+            pspec = P(placement, *([P.UNCONSTRAINED] * len(arg.shape)))
+          else:
+            # Without a placement axis in the mesh, we simply explicitly tell
+            # the compiler that there are no constraints on this tensor. This
+            # will leave the choices in the hands of the compiler.
+            pspec = P(*([P.UNCONSTRAINED] * (len(arg.shape) + 1)))
+          return _constrain_alike_if_mesh(mesh, unconstrained_tensor, x, pspec)
+        elif _is_all_explicit_axis(mesh):
+          input_sharding = jax.typeof(x).sharding
+          if _placement_axis_in_mesh(mesh, placement):
+            out_sharding = jax.sharding.NamedSharding(
+                input_sharding.mesh, P(placement, *input_sharding.spec)
+            )
+          else:
+            # With explicit axes, when a placement axis is not in the mesh,
+            # we must ask for replication (`None` sharding).
+            out_sharding = jax.sharding.NamedSharding(
+                input_sharding.mesh, P(None, *input_sharding.spec)
+            )
+          return jax.sharding.reshard(
+              unconstrained_tensor, out_shardings=out_sharding
+          )
+        else:
+          raise ValueError(
+              'Mesh axis types must all be either auto or manual, but got'
+              f' {mesh.axis_types}.'
+          )
 
     return jax.jit(single_arg_broadcast)(arg)
 
@@ -202,6 +243,7 @@ class PlacedComputations:
     placement_idx = 0
     return jnp.sum(arg, axis=[placement_idx])
 
+  @functools.partial(jax.named_call, name='drjax_map')
   def map_to_placement(
       self,
       fn,
@@ -248,45 +290,64 @@ class PlacedComputations:
     if mesh is None:
       mesh = _global_mesh(self._use_abstract_mesh)
 
-    def _constrain_at_placement_with_slices_like(x, y):
-      pspec = P(placement, *([P.UNCONSTRAINED] * (len(x.shape) - 1)))
-      placement_constrained = _constrain_if_mesh(mesh, x, pspec)
-
-      def _shard_slice(s):
-        s_sharded, _ = shard_alike(s, y[0])
-        return s_sharded
-
-      return jax.vmap(_shard_slice, in_axes=0)(placement_constrained)
-
-    # `spmd_axis_name`` causes any internal with_sharding_constraints or
-    # shard_map calls inside the `vmapped` function to respect the
-    # sharding along this axis name. But it doesn't enrich annotations on
-    # input / output tensors. Since we have a very limited mapping semantic
-    # here, adding these annotations is always safe for us, as long as
-    # `placement` is in the mesh.
     if _placement_axis_in_mesh(mesh, placement):
-      arg = jax.tree_util.tree_map(
-          _constrain_at_placement_with_slices_like, arg, arg
-      )
-      mapped_fn = jax.vmap(
-          # We must not have an `axis_name` argument here in order to work
-          # with any potential `shard_map` inside of `fn`.
-          fn,
-          in_axes=0,
-          out_axes=0,
-          spmd_axis_name=placement,
-      )
+      if _is_all_auto_axis(mesh):
+        # `vmap(..., spmd_axis_name=)` causes any internal
+        # with_sharding_constraints or shard_map calls inside the `vmapped`
+        # function to respect the sharding along this axis name. But it doesn't
+        # enrich annotations on input / output tensors. Since we have a very
+        # limited mapping semantic here, adding these annotations is always safe
+        # for us, as long as `placement` is in the mesh.
+        def _constrain_at_placement_with_slices_like(x):
+          pspec = P(placement, *([P.UNCONSTRAINED] * (len(x.shape) - 1)))
+          return _constrain_alike_if_mesh(mesh, x, x[0], pspec)
 
-      # In some cases, vmap may prevent placement sharding from propagating. We
-      # ensure placement sharding on the output just in case.
-      result = call_jaxpr(mapped_fn, arg)
-      return jax.tree_util.tree_map(
-          _constrain_at_placement_with_slices_like, result, result
-      )
-    else:
+        arg = jax.tree_util.tree_map(
+            _constrain_at_placement_with_slices_like, arg
+        )
+        mapped_fn = jax.vmap(
+            # We must not have an `axis_name` argument here in order to work
+            # with any potential `shard_map` inside of `fn`.
+            fn,
+            in_axes=0,
+            out_axes=0,
+            spmd_axis_name=placement,
+        )
+
+        # In some cases, vmap may prevent placement sharding from propagating.
+        # We ensure placement sharding on the output just in case.
+        result = call_jaxpr(mapped_fn, arg)
+        return jax.tree_util.tree_map(
+            _constrain_at_placement_with_slices_like, result
+        )
+      elif _is_all_explicit_axis(mesh):
+        mapped_fn = jax.vmap(
+            fn,
+            axis_name=placement,
+            in_axes=0,
+            out_axes=0,
+        )
+        result = call_jaxpr(mapped_fn, arg)
+        # Ensure the result is sharded along the placement axis when using
+        # explicit axes.
+        return jax.tree_util.tree_map(
+            lambda arr: jax.sharding.reshard(
+                arr,
+                jax.sharding.NamedSharding(
+                    mesh, P(placement, *arr.sharding.spec[1:])
+                ),
+            ),
+            result,
+        )
+      else:
+        raise ValueError(
+            'Mesh axis types must all be either auto or manual, but got'
+            f' {mesh!r}.'
+        )
+    else:  # Placement is not in the mesh.
       logging.warning(
-          'No mesh containing axis name %s found; defaulting to standard vmap.'
-          ' Mesh contains names: %s',
+          'No mesh containing axis name %s found; defaulting to standard'
+          ' vmap. Mesh contains names: %s',
           placement,
           mesh.axis_names if mesh is not None else 'None',
       )
@@ -297,5 +358,6 @@ class PlacedComputations:
           fn,
           axis_name=placement,
           in_axes=0,
+          out_axes=0,
       )
       return call_jaxpr(mapped_fn, arg)

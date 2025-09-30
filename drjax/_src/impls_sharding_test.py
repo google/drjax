@@ -25,6 +25,7 @@ from drjax._src import impls
 import jax
 from jax import numpy as jnp
 from jax.experimental.shard_map import shard_map
+from jax.sharding import AxisType
 from jax.sharding import PartitionSpec as PSpec
 import numpy as np
 
@@ -43,14 +44,15 @@ _DATA_SIZE = 10
 
 # Inline a helper function for creating and manipulating test meshes from
 # JAX's internals.
-def create_global_mesh(mesh_shape, axis_names):
+def create_mesh(mesh_shape, axis_names, axis_types):
   size = math.prod(mesh_shape)
   if len(jax.devices()) < size:
     raise unittest.SkipTest(f'Test requires {size} global devices.')
   devices = sorted(jax.devices(), key=lambda d: d.id)
   mesh_devices = np.array(devices[:size]).reshape(mesh_shape)
-  global_mesh = jax.sharding.Mesh(mesh_devices, axis_names)
-  return global_mesh
+  return jax.sharding.Mesh(
+      mesh_devices, axis_names=axis_names, axis_types=axis_types
+  )
 
 
 @contextlib.contextmanager
@@ -69,11 +71,14 @@ def mesh_context(mesh: jax.sharding.Mesh, use_as_context: bool):
   Yields:
     The mesh to pass to the DrJax function under test.
   """
-  if use_as_context:
-    with mesh:
+  with contextlib.ExitStack() as exit_stack:
+    if all(a == jax.sharding.AxisType.Explicit for a in mesh.axis_types):
+      exit_stack.enter_context(jax.sharding.set_mesh(mesh))
+    if use_as_context:
+      exit_stack.enter_context(mesh)
       yield None
-  else:
-    yield mesh
+    else:
+      yield mesh
 
 
 class BroadcastShardingBehaviorTest(parameterized.TestCase):
@@ -85,9 +90,18 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         placements_to_n_elements=self._placements,
     )
 
-  @parameterized.parameters(True, False)
-  def test_broadcast_with_1x1_fully_replicates(self, mesh_as_context):
-    global_mesh = create_global_mesh([1, 1], [_CLIENTS_AXIS, _DATA_AXIS])
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_broadcast_with_1x1_fully_replicates(
+      self, mesh_as_context, mesh_axes_type
+  ):
+    global_mesh = create_mesh(
+        [1, 1],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
     arg = jnp.zeros(shape=[_DATA_SIZE])
     with mesh_context(global_mesh, mesh_as_context) as mesh:
       result = self._comp_factory.broadcast_to_placement(
@@ -100,8 +114,10 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     self.assertTrue(sharding.is_fully_replicated)
 
   def test_broadcast_clients_with_jax_use_mesh(self):
-    global_mesh = create_global_mesh(
-        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE], [_CLIENTS_AXIS, _DATA_AXIS]
+    global_mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        [_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(AxisType.Auto, AxisType.Auto),
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
     with jax.set_mesh(global_mesh):
@@ -122,10 +138,17 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
-  @parameterized.parameters(True, False)
-  def test_broadcast_clients_shards_along_clients(self, mesh_as_context):
-    global_mesh = create_global_mesh(
-        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE], [_CLIENTS_AXIS, _DATA_AXIS]
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_broadcast_clients_shards_along_clients(
+      self, mesh_as_context, mesh_axes_type
+  ):
+    global_mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
     with mesh_context(global_mesh, mesh_as_context) as mesh:
@@ -145,11 +168,16 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
-  @parameterized.parameters(True, False)
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
   def test_broadcast_preserves_sharding_with_no_clients_mesh(
-      self, mesh_as_context
+      self, mesh_as_context, mesh_axes_type
   ):
-    global_mesh = create_global_mesh([_DATA_AXIS_SIZE], [_DATA_AXIS])
+    global_mesh = create_mesh(
+        [_DATA_AXIS_SIZE], axis_names=[_DATA_AXIS], axis_types=(mesh_axes_type,)
+    )
     arg = jnp.zeros(shape=[_DATA_SIZE])
     # Replicating a situation in which the caller's mesh has no clients axis; in
     # this case, we should preserve the sharding of any broadcast tensors, but
@@ -182,13 +210,19 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         (_NUM_CLIENTS, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
 
-  @parameterized.parameters(True, False)
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
   def test_broadcast_preserves_arg_sharding_with_clients_mesh(
       self,
       mesh_as_context,
+      mesh_axes_type,
   ):
-    global_mesh = create_global_mesh(
-        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE], [_CLIENTS_AXIS, _DATA_AXIS]
+    global_mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
     arg_spec = PSpec(_DATA_AXIS)
@@ -243,18 +277,23 @@ class MapFnShardingTest(parameterized.TestCase):
     self._comp_factory = impls.PlacedComputations(
         placements_to_n_elements=self._placements,
     )
-    self._global_mesh = create_global_mesh(
-        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE], [_CLIENTS_AXIS, _DATA_AXIS]
-    )
 
-  @parameterized.parameters(True, False)
-  def test_map_respects_clients_sharding(self, mesh_as_context):
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_map_respects_clients_sharding(self, mesh_as_context, mesh_axes_type):
     arg1_at_c, arg2_at_c = _place_args_at_clients(
         jnp.zeros(shape=[_DATA_SIZE]),
         jnp.ones(shape=[_DATA_SIZE]),
         comp_factory=self._comp_factory,
     )
-    with mesh_context(self._global_mesh, mesh_as_context) as mesh:
+    mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
+    with mesh_context(mesh, mesh_as_context) as mesh:
       result = self._comp_factory.map_to_placement(
           add, (arg1_at_c, arg2_at_c), _CLIENTS_AXIS, mesh
       )
@@ -269,13 +308,23 @@ class MapFnShardingTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
-  @parameterized.parameters(True, False)
-  def test_map_zeros_like_respects_clients_sharding(self, mesh_as_context):
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_map_zeros_like_respects_clients_sharding(
+      self, mesh_as_context, mesh_axes_type
+  ):
     arg_at_c = _place_args_at_clients(
         jnp.ones(shape=[_DATA_SIZE]),
         comp_factory=self._comp_factory,
     )
-    with mesh_context(self._global_mesh, mesh_as_context) as mesh:
+    mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
+    with mesh_context(mesh, mesh_as_context) as mesh:
       result = self._comp_factory.map_to_placement(
           jnp.zeros_like, arg_at_c, _CLIENTS_AXIS, mesh
       )
@@ -290,23 +339,33 @@ class MapFnShardingTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
-  @parameterized.parameters(True, False)
-  def test_map_respects_non_clients_sharding(self, mesh_as_context):
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_map_respects_non_clients_sharding(
+      self, mesh_as_context, mesh_axes_type
+  ):
+    mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
     arg_spec = PSpec(_DATA_AXIS)
     sharded_arg1 = jax.device_put(
         jnp.zeros(shape=[_DATA_SIZE]),
-        device=jax.sharding.NamedSharding(self._global_mesh, arg_spec),
+        device=jax.sharding.NamedSharding(mesh, arg_spec),
     )
     sharded_arg2 = jax.device_put(
         jnp.ones(shape=[_DATA_SIZE]),
-        device=jax.sharding.NamedSharding(self._global_mesh, arg_spec),
+        device=jax.sharding.NamedSharding(mesh, arg_spec),
     )
     arg1_at_c, arg2_at_c = _place_args_at_clients(
         sharded_arg1,
         sharded_arg2,
         comp_factory=self._comp_factory,
     )
-    with mesh_context(self._global_mesh, mesh_as_context) as mesh:
+    with mesh_context(mesh, mesh_as_context) as mesh:
       result = self._comp_factory.map_to_placement(
           add, (arg1_at_c, arg2_at_c), _CLIENTS_AXIS, mesh
       )
@@ -328,23 +387,30 @@ class MapFnShardingTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
 
-  @parameterized.parameters(True, False)
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
   def test_map_forces_clients_sharding_with_model_parallelism(
-      self,
-      mesh_as_context,
+      self, mesh_as_context, mesh_axes_type
   ):
+    mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
     arg_spec = PSpec(_DATA_AXIS)
     sharded_arg1 = jax.device_put(
         jnp.zeros(shape=[_DATA_SIZE]),
-        device=jax.sharding.NamedSharding(self._global_mesh, arg_spec),
+        device=jax.sharding.NamedSharding(mesh, arg_spec),
     )
     sharded_arg2 = jax.device_put(
         jnp.ones(shape=[_DATA_SIZE]),
-        device=jax.sharding.NamedSharding(self._global_mesh, arg_spec),
+        device=jax.sharding.NamedSharding(mesh, arg_spec),
     )
     sharded_arg1 = jnp.tile(sharded_arg1, reps=[_NUM_CLIENTS, 1])
     sharded_arg2 = jnp.tile(sharded_arg2, reps=[_NUM_CLIENTS, 1])
-    with mesh_context(self._global_mesh, mesh_as_context) as mesh:
+    with mesh_context(mesh, mesh_as_context) as mesh:
       result = self._comp_factory.map_to_placement(
           add, (sharded_arg1, sharded_arg2), _CLIENTS_AXIS, mesh
       )
@@ -377,13 +443,23 @@ class MapFnShardingTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
 
-  @parameterized.parameters(True, False)
-  def test_map_of_shard_map_fully_shards_result(self, mesh_as_context):
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_map_of_shard_map_fully_shards_result(
+      self, mesh_as_context, mesh_axes_type
+  ):
+    mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
     arg_spec = PSpec(_DATA_AXIS)
 
     @functools.partial(
         shard_map,
-        mesh=self._global_mesh,
+        mesh=mesh,
         in_specs=(arg_spec, arg_spec),
         out_specs=arg_spec,
     )
@@ -392,15 +468,15 @@ class MapFnShardingTest(parameterized.TestCase):
 
     sharded_arg1 = jax.device_put(
         jnp.zeros(shape=[_DATA_SIZE]),
-        device=jax.sharding.NamedSharding(self._global_mesh, arg_spec),
+        device=jax.sharding.NamedSharding(mesh, arg_spec),
     )
     sharded_arg2 = jax.device_put(
         jnp.ones(shape=[_DATA_SIZE]),
-        device=jax.sharding.NamedSharding(self._global_mesh, arg_spec),
+        device=jax.sharding.NamedSharding(mesh, arg_spec),
     )
     sharded_arg1 = jnp.tile(sharded_arg1, reps=[_NUM_CLIENTS, 1])
     sharded_arg2 = jnp.tile(sharded_arg2, reps=[_NUM_CLIENTS, 1])
-    with mesh_context(self._global_mesh, mesh_as_context) as mesh:
+    with mesh_context(mesh, mesh_as_context) as mesh:
       result = self._comp_factory.map_to_placement(
           shard_map_add, (sharded_arg1, sharded_arg2), _CLIENTS_AXIS, mesh
       )
