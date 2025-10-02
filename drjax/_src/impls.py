@@ -15,7 +15,7 @@
 
 from collections.abc import Mapping
 import functools
-from typing import Any
+from typing import Any, TypeGuard
 
 from absl import logging
 import jax
@@ -46,18 +46,6 @@ def call_jaxpr(fn, arg):
     return fn(arg)
 
 
-def _is_all_auto_axis(mesh: jax.sharding.Mesh):
-  if mesh.axis_types is None:
-    return True
-  return all(a == jax.sharding.AxisType.Auto for a in mesh.axis_types)
-
-
-def _is_all_explicit_axis(mesh: jax.sharding.Mesh):
-  if mesh.axis_types is None:
-    return False
-  return all(a == jax.sharding.AxisType.Explicit for a in mesh.axis_types)
-
-
 # TODO(b/366437841): Remove use of pxla.thread_resources.env.physical_mesh,
 # which is a JAX internal API.
 def _global_mesh(
@@ -75,7 +63,7 @@ def _global_mesh(
 def _placement_axis_in_mesh(
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None,
     placement: str,
-) -> bool:
+) -> TypeGuard[jax.sharding.Mesh | jax.sharding.AbstractMesh]:
   """Checks if a placement axis is present in the mesh."""
   if mesh is None:
     return False
@@ -186,7 +174,7 @@ class PlacedComputations:
         )
         return unconstrained_tensor
       else:
-        if _is_all_auto_axis(mesh):
+        if mesh.are_all_axes_auto:
           if _placement_axis_in_mesh(mesh, placement):
             pspec = P(placement, *([P.UNCONSTRAINED] * len(arg.shape)))
           else:
@@ -195,7 +183,7 @@ class PlacedComputations:
             # will leave the choices in the hands of the compiler.
             pspec = P(*([P.UNCONSTRAINED] * (len(arg.shape) + 1)))
           return _constrain_alike_if_mesh(mesh, unconstrained_tensor, x, pspec)
-        elif _is_all_explicit_axis(mesh):
+        elif mesh.are_all_axes_explicit:
           input_sharding = jax.typeof(x).sharding
           if _placement_axis_in_mesh(mesh, placement):
             out_sharding = jax.sharding.NamedSharding(
@@ -290,8 +278,8 @@ class PlacedComputations:
     if mesh is None:
       mesh = _global_mesh(self._use_abstract_mesh)
 
-    if _placement_axis_in_mesh(mesh, placement):
-      if _is_all_auto_axis(mesh):
+    if mesh is not None and _placement_axis_in_mesh(mesh, placement):
+      if mesh.are_all_axes_auto:
         # `vmap(..., spmd_axis_name=)` causes any internal
         # with_sharding_constraints or shard_map calls inside the `vmapped`
         # function to respect the sharding along this axis name. But it doesn't
@@ -320,7 +308,7 @@ class PlacedComputations:
         return jax.tree_util.tree_map(
             _constrain_at_placement_with_slices_like, result
         )
-      elif _is_all_explicit_axis(mesh):
+      elif mesh.are_all_axes_explicit:
         mapped_fn = jax.vmap(
             fn,
             axis_name=placement,
