@@ -322,7 +322,7 @@ class PlacedComputations:
             lambda arr: jax.sharding.reshard(
                 arr,
                 jax.sharding.NamedSharding(
-                    mesh, P(placement, *arr.sharding.spec[1:])
+                    mesh, spec=P(placement, *jax.typeof(arr).sharding.spec[1:])
                 ),
             ),
             result,
