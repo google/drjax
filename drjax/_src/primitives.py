@@ -56,6 +56,7 @@ def _register_broadcast_impls(
     broadcast_prim_fn: BroadcastType,
     broadcast_array_eval: BroadcastType,
     sum_prim_fn: AggType,
+    placement_str: str,
     n_elements: int,
 ) -> None:
   """Registers implementations for the broadcast primitive.
@@ -75,13 +76,27 @@ def _register_broadcast_impls(
     sum_prim_fn: A callable which binds its arguments to the summation primitive
       from the placement inserted by this broadcast. Similar to
       `broadcast_prim_fn`.
+    placement_str: The name of the placement which this broadcast targets.
     n_elements: The number of elements present at the placement which this
       broadcast targets.
   """
 
   def broadcast_abstract_eval(xs, *, mesh):
-    del mesh
-    return core.ShapedArray((n_elements,) + xs.shape, xs.dtype)
+    sharding_axis = (
+        placement_str
+        if impls._placement_axis_in_mesh(mesh, placement_str)  # pylint: disable=protected-access
+        else None
+    )
+    new_sharding = xs.sharding.update(
+        spec=jax.sharding.PartitionSpec(sharding_axis, *xs.sharding.spec)
+    )
+    return core.ShapedArray(
+        shape=(n_elements,) + xs.shape,
+        dtype=xs.dtype,
+        weak_type=xs.weak_type,
+        sharding=new_sharding,
+        memory_space=xs.memory_space,
+    )
 
   # Abstract eval rule.
   broadcast_p.def_abstract_eval(broadcast_abstract_eval)
@@ -101,11 +116,11 @@ def _register_broadcast_impls(
   ad.primitive_jvps[broadcast_p] = broadcast_jvp
 
   def broadcast_vjp(cotangents_out, primals_in, mesh):
-    del mesh
+    del mesh  # Unused.
     if isinstance(cotangents_out, jax.interpreters.ad.Zero):
       # We are differerentiating back through a broadcast; the incoming value,
       # therefore, has the right shape and dtype for the Zero we generate.
-      return (jax.interpreters.ad.Zero(primals_in.aval),)
+      return (jax.interpreters.ad.Zero.from_primal_value(primals_in.aval),)
     # This implementation *must* use the sum_prim_fn, rather than the array
     # implementation of summation, to result in a reduce_sum in the Jaxpr.
     return (sum_prim_fn(cotangents_out),)
@@ -157,11 +172,21 @@ def _register_single_arg_agg_impls(
   """
 
   def agg_abstract_eval(xs):
-    return jax.tree_util.tree_map(
-        # We slice away the first dimension in doing the reduction; its gone!
-        lambda x: core.ShapedArray(x.shape[1:], x.dtype),
-        xs,
-    )
+
+    def aval_with_new_sharding(x):
+      # We slice away the first dimension in doing the reduction; its gone!
+      new_sharding = x.sharding.update(
+          spec=jax.sharding.PartitionSpec(*x.sharding.spec[1:])
+      )
+      return core.ShapedArray(
+          shape=x.shape[1:],
+          dtype=x.dtype,
+          weak_type=x.weak_type,
+          sharding=new_sharding,
+          memory_space=x.memory_space,
+      )
+
+    return jax.tree.map(aval_with_new_sharding, xs)
 
   # Abstract eval rule
   agg_p.def_abstract_eval(agg_abstract_eval)
@@ -194,7 +219,7 @@ def _register_single_arg_agg_impls(
       # generate. This is always correct if jax's symbolic Zero is a static
       # concept, depending on data flow in the program (rather than e.g. runtime
       # values).
-      return (jax.interpreters.ad.Zero(primals_in.aval),)
+      return (jax.interpreters.ad.Zero.from_primal_value(primals_in),)
     return (vjp_impl(cotangents_out),)
 
   ad.primitive_transposes[agg_p] = agg_vjp
@@ -257,6 +282,7 @@ def _define_and_register_prims_for_placement(
       broadcast_prim_fn,
       broadcast_array_eval,
       sum_prim_fn,
+      placement_str,
       n_elements,
   )
 
