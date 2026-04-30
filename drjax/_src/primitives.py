@@ -31,7 +31,6 @@ class BroadcastType(Protocol):
   def __call__(
       self,
       x: jnp.ndarray,
-      mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
   ) -> jnp.ndarray:
     ...
 
@@ -45,8 +44,8 @@ def _define_broadcast_prim(
   """Defines and returns broadcast ptimitive and associated binding."""
   broadcast_p = extended_core.Primitive(broadcast_name)  # Create the primitive
 
-  def broadcast_prim_fn(x, *, mesh=None):
-    return broadcast_p.bind(x, mesh=mesh)
+  def broadcast_prim_fn(x, **params):
+    return broadcast_p.bind(x, **params)
 
   return (broadcast_p, broadcast_prim_fn)
 
@@ -56,7 +55,6 @@ def _register_broadcast_impls(
     broadcast_prim_fn: BroadcastType,
     broadcast_array_eval: BroadcastType,
     sum_prim_fn: AggType,
-    placement_str: str,
     n_elements: int,
 ) -> None:
   """Registers implementations for the broadcast primitive.
@@ -76,37 +74,12 @@ def _register_broadcast_impls(
     sum_prim_fn: A callable which binds its arguments to the summation primitive
       from the placement inserted by this broadcast. Similar to
       `broadcast_prim_fn`.
-    placement_str: The name of the placement which this broadcast targets.
     n_elements: The number of elements present at the placement which this
       broadcast targets.
   """
 
-  def broadcast_abstract_eval(
-      xs, *, mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None
-  ) -> core.ShapedArray:
-    # If no mesh was provided, we try to use the current abstract mesh.
-    if mesh is None:
-      abstract_mesh = jax.sharding.get_abstract_mesh()
-    else:
-      abstract_mesh = (
-          mesh.abstract_mesh if isinstance(mesh, jax.sharding.Mesh) else mesh
-      )
-    sharding_axis = (
-        placement_str
-        if impls._placement_axis_in_mesh(abstract_mesh, placement_str)  # pylint: disable=protected-access
-        else None
-    )
-    new_sharding = xs.sharding.update(
-        mesh=abstract_mesh,
-        spec=jax.sharding.PartitionSpec(sharding_axis, *xs.sharding.spec),
-    )
-    return core.ShapedArray(
-        shape=(n_elements,) + xs.shape,
-        dtype=xs.dtype,
-        weak_type=xs.weak_type,
-        sharding=new_sharding,
-        memory_space=xs.memory_space,
-    )
+  def broadcast_abstract_eval(xs, **_params):
+    return core.ShapedArray((n_elements,) + xs.shape, xs.dtype)
 
   # Abstract eval rule.
   broadcast_p.def_abstract_eval(broadcast_abstract_eval)
@@ -114,32 +87,31 @@ def _register_broadcast_impls(
   broadcast_p.def_impl(broadcast_array_eval)
   # Lowering rule to MLIR.
   mlir.register_lowering(
-      broadcast_p, mlir.lower_fun(broadcast_array_eval, multiple_results=False),
+      broadcast_p, mlir.lower_fun(broadcast_array_eval, multiple_results=False)
   )
 
-  def broadcast_jvp(primals_in, tangents_in, mesh):
-    primals_out = broadcast_prim_fn(*primals_in, mesh=mesh)
-    tangents_out = broadcast_prim_fn(*tangents_in, mesh=mesh)
+  def broadcast_jvp(primals_in, tangents_in, **params):
+    primals_out = broadcast_prim_fn(*primals_in, **params)
+    tangents_out = broadcast_prim_fn(*tangents_in, **params)
     return primals_out, tangents_out
 
   # Registering JVP should allow forward AD.
   ad.primitive_jvps[broadcast_p] = broadcast_jvp
 
-  def broadcast_vjp(cotangents_out, primals_in, mesh):
-    del mesh  # Unused.
+  def broadcast_vjp(cotangents_out, primals_in, **params):
     if isinstance(cotangents_out, jax.interpreters.ad.Zero):
       # We are differerentiating back through a broadcast; the incoming value,
       # therefore, has the right shape and dtype for the Zero we generate.
-      return (jax.interpreters.ad.Zero(primals_in.aval.to_ct_aval()),)
+      return (jax.interpreters.ad.Zero(primals_in.aval),)
     # This implementation *must* use the sum_prim_fn, rather than the array
     # implementation of summation, to result in a reduce_sum in the Jaxpr.
-    return (sum_prim_fn(cotangents_out),)
+    return (sum_prim_fn(cotangents_out, **params),)
 
   ad.primitive_transposes[broadcast_p] = broadcast_vjp
 
-  def _batch_broadcast(xs, batched_shape, mesh):
+  def _batch_broadcast(xs, batched_shape, **params):
     # We inserted clients dimension in front, so batch dim went down one.
-    return broadcast_prim_fn(*xs, mesh=mesh), batched_shape[0] + 1
+    return broadcast_prim_fn(*xs, **params), batched_shape[0] + 1
 
   # Make sure this can also be batched / mapped. This happens when dispatching
   # forward AD, I think.
@@ -152,8 +124,8 @@ def _define_single_arg_agg_prim(
   """Defines and returns an aggregation primitive taking a single argument."""
   agg_p = extended_core.Primitive(agg_name)  # Create the primitive
 
-  def agg_prim_fn(x):
-    return agg_p.bind(x)
+  def agg_prim_fn(x, **params):
+    return agg_p.bind(x, **params)
 
   return agg_p, agg_prim_fn
 
@@ -181,39 +153,21 @@ def _register_single_arg_agg_impls(
       aggregation primitive.
   """
 
-  def agg_abstract_eval(xs) -> core.ShapedArray:
-
-    def aval_with_new_sharding(x):
-      # We slice away the first dimension in doing the reduction; its gone!
-      new_sharding = x.sharding.update(
-          spec=jax.sharding.PartitionSpec(*x.sharding.spec[1:])
-      )
-      return core.ShapedArray(
-          shape=x.shape[1:],
-          dtype=x.dtype,
-          weak_type=x.weak_type,
-          sharding=new_sharding,
-          memory_space=x.memory_space,
-      )
-
-    return jax.tree.map(aval_with_new_sharding, xs)
+  def agg_abstract_eval(xs):
+    return jax.tree_util.tree_map(
+        # We slice away the first dimension in doing the reduction; its gone!
+        lambda x: core.ShapedArray(x.shape[1:], x.dtype),
+        xs,
+    )
 
   # Abstract eval rule
   agg_p.def_abstract_eval(agg_abstract_eval)
   # Concrete eval rule
   agg_p.def_impl(agg_array_eval)
   # Lowering rule to MLIR.
-  kwargs = {}
-  # TODO(krush): The mean primitive is buggy: if passed an integer input, its
-  # abstract eval rule will claim to return an integer output, but its eval rule
-  # will return a float output. Fix this and remove the cacheable=False, which
-  # works around the bug.
-  if jax.version.__version_info__ >= (0, 7):
-    kwargs['cacheable'] = False
   mlir.register_lowering(
       agg_p,
       mlir.lower_fun(agg_array_eval, multiple_results=False),
-      **kwargs
   )
 
   def agg_jvp(primals_in, tangents_in):
@@ -229,7 +183,7 @@ def _register_single_arg_agg_impls(
       # generate. This is always correct if jax's symbolic Zero is a static
       # concept, depending on data flow in the program (rather than e.g. runtime
       # values).
-      return (jax.interpreters.ad.Zero(primals_in.aval.to_ct_aval()),)
+      return (jax.interpreters.ad.Zero(primals_in.aval),)
     return (vjp_impl(cotangents_out),)
 
   ad.primitive_transposes[agg_p] = agg_vjp
@@ -238,7 +192,7 @@ def _register_single_arg_agg_impls(
     # Certain jax libs can silently insert the 'batching' dim 'all the way at
     # the front'; we are about to destroy the front axis by agging, so move
     # that puppy to the back. Tell the rest of JAX what happened here.
-    xs = jnp.moveaxis(*xs, *batched_shape, -1)
+    xs = batching.moveaxis(*xs, *batched_shape, -1)
     return agg_prim_fn(xs), len(xs.shape) - 2
 
   # Make sure this can also be batched / mapped. This happens when dispatching
@@ -284,15 +238,15 @@ def _define_and_register_prims_for_placement(
   primdef_dict[sum_name] = sum_p
   primdef_dict[mean_name] = mean_p
 
-  def broadcast_array_eval(x, *, mesh):
-    return impl_defs.broadcast_to_placement(x, placement_str, mesh)
+  def broadcast_array_eval(x, **params):
+    mesh = params.get('mesh')
+    return impl_defs.broadcast_to_placement(x, placement_str, mesh=mesh)
 
   _register_broadcast_impls(
       broadcast_p,
       broadcast_prim_fn,
       broadcast_array_eval,
       sum_prim_fn,
-      placement_str,
       n_elements,
   )
 

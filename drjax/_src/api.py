@@ -218,8 +218,10 @@ def _replace_api(
   )
 
   def broadcast_impl(x, *, mesh=None):
+
     return jax.tree_util.tree_map(
-        lambda x: prim_computations[f'broadcast_{placement}'](x, mesh=mesh), x
+        lambda arr: prim_computations[f'broadcast_{placement}'](arr, mesh=mesh),
+        x
     )
 
   api.broadcast = _implement_api(broadcast, broadcast_impl)
@@ -233,7 +235,6 @@ def drjax_program(
     *,
     placements: Mapping[str, int],
     self_module,
-    use_abstract_mesh: bool = True,
 ):
   """Patches symbols into current module and call `jax.jit` on the result.
 
@@ -262,9 +263,6 @@ def drjax_program(
       collectives referencing this name results in undefined behavior).
     self_module: The Python module to patch the API when performing DrJAX
       tracing.
-    use_abstract_mesh: Whether to optionally search for jax's abstract mesh when
-      adding drjax sharding constraints (e.g. making use of drjax compatible
-      with jax.set_mesh).
 
   Returns:
     A decorated function enabling the calling of the DrJAX API. Interoperable
@@ -279,7 +277,6 @@ def drjax_program(
 
   placed_computations = impls.PlacedComputations(
       placements_to_n_elements=placements,
-      use_abstract_mesh=use_abstract_mesh,
   )
   prim_computations, primdefs = primitives.register_primitives(
       placements=placements
