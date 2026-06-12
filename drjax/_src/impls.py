@@ -186,19 +186,38 @@ class PlacedComputations:
           )
         elif mesh.are_all_axes_explicit:
           input_sharding = jax.typeof(x).sharding
+          requires_reshard = False
+          if isinstance(input_sharding, jax.sharding.NamedSharding):
+            in_spec = input_sharding.spec
+          else:
+            # Fallback for non-NamedSharding inputs (e.g.,
+            # SingleDeviceSharding).
+            # jnp.broadcast_to with out_sharding requires the input to have a
+            # .spec attribute to perform compatibility checks, and fails with
+            # AttributeError on SingleDeviceSharding.
+            # jax.lax.broadcast_in_dim with out_sharding fails in eager mode
+            # with ValueError regarding incompatible devices when moving from
+            # single device to mesh.
+            # Thus, the two-step approach (broadcast then reshard) is necessary
+            # for robustness in eager mode.
+            in_spec = P()
+            requires_reshard = True
+
           if _placement_axis_in_mesh(mesh, placement):
             out_sharding = jax.sharding.NamedSharding(
-                input_sharding.mesh, P(placement, *input_sharding.spec)
+                mesh, P(placement, *in_spec)
             )
           else:
             # With explicit axes, when a placement axis is not in the mesh,
             # we must ask for replication (`None` sharding).
-            out_sharding = jax.sharding.NamedSharding(
-                input_sharding.mesh, P(None, *input_sharding.spec)
+            out_sharding = jax.sharding.NamedSharding(mesh, P(None, *in_spec))
+          if requires_reshard:
+            result = jnp.broadcast_to(x, (n_elements,) + x.shape)
+            return jax.sharding.reshard(result, out_sharding)
+          else:
+            return jnp.broadcast_to(
+                x, (n_elements,) + x.shape, out_sharding=out_sharding
             )
-          return jnp.broadcast_to(
-              x, (n_elements,) + x.shape, out_sharding=out_sharding
-          )
         else:
           raise ValueError(
               'Mesh axis types must all be either auto or manual, but got'
@@ -317,14 +336,22 @@ class PlacedComputations:
         result = call_jaxpr(mapped_fn, arg)
         # Ensure the result is sharded along the placement axis when using
         # explicit axes.
+        def _get_target_sharding(
+            arr: jnp.ndarray,
+        ) -> jax.sharding.NamedSharding:
+          arr_sharding = jax.typeof(arr).sharding
+          if isinstance(arr_sharding, jax.sharding.NamedSharding):
+            spec = P(placement, *arr_sharding.spec[1:])
+          else:
+            raise NotImplementedError(
+                f'Unsupported input sharding type: {type(arr_sharding)}. DrJax'
+                ' requires NamedSharding when using explicit mesh axes.'
+            )
+          return jax.sharding.NamedSharding(mesh, spec)
+
         return jax.sharding.reshard(
             result,
-            jax.tree.map(
-                lambda arr: jax.sharding.NamedSharding(
-                    mesh, spec=P(placement, *jax.typeof(arr).sharding.spec[1:])
-                ),
-                result,
-            ),
+            jax.tree.map(_get_target_sharding, result),
         )
       else:
         raise ValueError(

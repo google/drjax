@@ -91,15 +91,26 @@ def _register_broadcast_impls(
       abstract_mesh = (
           mesh.abstract_mesh if isinstance(mesh, jax.sharding.Mesh) else mesh
       )
-    sharding_axis = (
-        placement_str
-        if impls._placement_axis_in_mesh(abstract_mesh, placement_str)  # pylint: disable=protected-access
-        else None
-    )
-    new_sharding = xs.sharding.update(
-        mesh=abstract_mesh,
-        spec=jax.sharding.PartitionSpec(sharding_axis, *xs.sharding.spec),
-    )
+    if impls._placement_axis_in_mesh(abstract_mesh, placement_str):  # pylint: disable=protected-access
+      sharding_axis = placement_str
+    else:
+      if abstract_mesh is not None and any(
+          t == jax.sharding.AxisType.Explicit for t in abstract_mesh.axis_types
+      ):
+        raise ValueError(
+            f"Placement axis '{placement_str}' not found in mesh with explicit"
+            ' axes.'
+        )
+      sharding_axis = None
+    if xs.sharding is not None:
+      new_sharding = xs.sharding.update(
+          mesh=abstract_mesh,
+          spec=jax.sharding.PartitionSpec(sharding_axis, *xs.sharding.spec),
+      )
+    else:
+      new_sharding = jax.sharding.NamedSharding(
+          abstract_mesh, jax.sharding.PartitionSpec(sharding_axis)
+      )
     return core.ShapedArray(
         shape=(n_elements,) + xs.shape,
         dtype=xs.dtype,

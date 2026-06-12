@@ -39,14 +39,21 @@ class ImplsTest(parameterized.TestCase):
     self._placements = {'clients': 100}
     self._sequence_length = 10
 
+  @chex.variants(with_jit=True, without_jit=True)
   def test_broadcast_on_float(self):
     comp_factory = impls.PlacedComputations(
         placements_to_n_elements=self._placements,
     )
-    actual_output = comp_factory.broadcast_to_placement(0.0, 'clients')
+
+    @self.variant
+    def _run():
+      return comp_factory.broadcast_to_placement(0.0, 'clients')
+
+    actual_output = _run()
     expected_output = jnp.zeros(shape=[100])
     chex.assert_trees_all_equal(actual_output, expected_output)
 
+  @chex.variants(with_jit=True, without_jit=True)
   def test_runs_temp_sens_example(self):
     comp_factory = impls.PlacedComputations(
         placements_to_n_elements=self._placements,
@@ -54,6 +61,7 @@ class ImplsTest(parameterized.TestCase):
     def _one_if_over(x, y):
       return jax.lax.cond(x > y, lambda: 1.0, lambda: 0.0)
 
+    @self.variant
     def temp_sens_example(m, t):
       t_at_c = comp_factory.broadcast_to_placement(t, 'clients')
       total_over = comp_factory.map_to_placement(
@@ -62,11 +70,11 @@ class ImplsTest(parameterized.TestCase):
       return comp_factory.mean_from_placement(total_over)
 
     measurements = jnp.arange(self._placements['clients'])
-
     self.assertEqual(
         temp_sens_example(measurements, jnp.median(measurements)), 0.5
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
   )
@@ -82,8 +90,11 @@ class ImplsTest(parameterized.TestCase):
             model, x
         )
 
+      @self.variant
       def test_training(model, data):
-        model_at_clients = comp_factory.broadcast_to_placement(model, 'clients')
+        model_at_clients = comp_factory.broadcast_to_placement(
+            model, 'clients'
+        )
         grads, _ = comp_factory.map_to_placement(
             update, (model_at_clients, data), 'clients'
         )
@@ -93,8 +104,10 @@ class ImplsTest(parameterized.TestCase):
           jnp.ones(shape=(self._placements['clients'],), dtype=jnp.float32),
           device=NamedSharding(mesh, PartitionSpec('clients')),
       )
-      model = jax.device_put([0.0], device=NamedSharding(mesh, PartitionSpec()))
-      self.assertEqual(jax.jit(test_training)(model, clients_data), 0.0)
+      model = jax.device_put(
+          [0.0], device=NamedSharding(mesh, PartitionSpec())
+      )
+      self.assertEqual(test_training(model, clients_data), 0.0)
 
 
 # This allows us to test sharding behavior across multiple devices.

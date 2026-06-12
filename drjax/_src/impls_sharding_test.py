@@ -33,11 +33,11 @@ import numpy as np
 # and exporting a constant to help make mesh construction easier and guarantees
 # cleaner. Other constants defined here are intended to help make the operations
 # of the assertions in the tests below more transparent.
-_CLIENTS_AXIS = 'clients'
+_CLIENTS_AXIS = "clients"
 _CLIENTS_AXIS_SIZE = 2
 _NUM_CLIENTS = 100
 
-_DATA_AXIS = 'data'
+_DATA_AXIS = "data"
 _DATA_AXIS_SIZE = 2
 _DATA_SIZE = 10
 
@@ -47,7 +47,7 @@ _DATA_SIZE = 10
 def create_mesh(mesh_shape, axis_names, axis_types):
   size = math.prod(mesh_shape)
   if len(jax.devices()) < size:
-    raise unittest.SkipTest(f'Test requires {size} global devices.')
+    raise unittest.SkipTest(f"Test requires {size} global devices.")
   devices = sorted(jax.devices(), key=lambda d: d.id)
   mesh_devices = np.array(devices[:size]).reshape(mesh_shape)
   return jax.sharding.Mesh(
@@ -90,6 +90,7 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         placements_to_n_elements=self._placements,
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -103,16 +104,20 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         axis_types=(mesh_axes_type, mesh_axes_type),
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
+
+    @self.variant(static_argnums=(1,))
+    def _run(arg, mesh):
+      return self._comp_factory.broadcast_to_placement(arg, _CLIENTS_AXIS, mesh)
+
     with mesh_context(global_mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.broadcast_to_placement(
-          arg, _CLIENTS_AXIS, mesh
-      )
+      result = _run(arg, mesh)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     # There is only one chip we talk to, so this sharding 'looks' fully
     # replicated.
     self.assertTrue(sharding.is_fully_replicated)
 
+  @chex.variants(with_jit=True, without_jit=True)
   def test_broadcast_clients_with_jax_use_mesh(self):
     global_mesh = create_mesh(
         [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
@@ -120,11 +125,16 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         axis_types=(AxisType.Auto, AxisType.Auto),
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
-    with jax.set_mesh(global_mesh):
-      result = self._comp_factory.broadcast_to_placement(
+
+    @self.variant
+    def _run(arg):
+      return self._comp_factory.broadcast_to_placement(
           arg,
           _CLIENTS_AXIS,
       )
+
+    with jax.set_mesh(global_mesh):
+      result = _run(arg)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     # If this sharding were fully replicated, we would be *replicating* the data
@@ -138,6 +148,7 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -151,10 +162,13 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         axis_types=(mesh_axes_type, mesh_axes_type),
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
+
+    @self.variant(static_argnums=(1,))
+    def _run(arg, mesh):
+      return self._comp_factory.broadcast_to_placement(arg, _CLIENTS_AXIS, mesh)
+
     with mesh_context(global_mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.broadcast_to_placement(
-          arg, _CLIENTS_AXIS, mesh
-      )
+      result = _run(arg, mesh)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     # If this sharding were fully replicated, we would be *replicating* the data
@@ -168,6 +182,7 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -175,13 +190,13 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
   def test_broadcast_preserves_sharding_with_no_clients_mesh(
       self, mesh_as_context, mesh_axes_type
   ):
+    # Replicating a situation in which the caller's mesh has no clients axis; in
+    # this case, we should preserve the sharding of any broadcast tensors, but
+    # not shard along the (nonexistent) clients axis.
     global_mesh = create_mesh(
         [_DATA_AXIS_SIZE], axis_names=[_DATA_AXIS], axis_types=(mesh_axes_type,)
     )
     arg = jnp.zeros(shape=[_DATA_SIZE])
-    # Replicating a situation in which the caller's mesh has no clients axis; in
-    # this case, we should preserve the sharding of any broadcast tensors, but
-    # not shard along the (nonexistent) clients axis.
     no_mesh_comp_factory = impls.PlacedComputations(
         placements_to_n_elements=self._placements,
     )
@@ -189,10 +204,15 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     sharded_arg = jax.device_put(
         arg, device=jax.sharding.NamedSharding(global_mesh, arg_spec)
     )
-    with mesh_context(global_mesh, mesh_as_context) as mesh:
-      result = no_mesh_comp_factory.broadcast_to_placement(
-          sharded_arg, _CLIENTS_AXIS, mesh
+
+    @self.variant(static_argnums=(1,))
+    def _run(arg, mesh):
+      return no_mesh_comp_factory.broadcast_to_placement(
+          arg, _CLIENTS_AXIS, mesh
       )
+
+    with mesh_context(global_mesh, mesh_as_context) as mesh:
+      result = _run(sharded_arg, mesh)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     self.assertIsInstance(sharding, jax.sharding.NamedSharding)
@@ -201,23 +221,21 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     # The resulting broadcast array should have the same sharding as its input
     # for the non-injected dimensions, and replication on the clients dimension.
     self.assertEqual(sharding.spec, PSpec(None, _DATA_AXIS))
-    # Here, the clients axis should be replicated on each set of chips;
-    # however,the data making up the broadcasted array should be split along
-    # the 'data' dimension; thus only the second dimension of the tensor should
-    # be split.
+    # Here, the clients axis should be replicated on each set of chips; however,
+    # the data making up the broadcasted array should be split along the 'data'
+    # dimension; thus only the second dimension of the tensor should be split.
     self.assertEqual(
         sharding.shard_shape(result.shape),
         (_NUM_CLIENTS, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
   )
   def test_broadcast_preserves_arg_sharding_with_clients_mesh(
-      self,
-      mesh_as_context,
-      mesh_axes_type,
+      self, mesh_as_context, mesh_axes_type
   ):
     global_mesh = create_mesh(
         [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
@@ -229,10 +247,13 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     sharded_arg = jax.device_put(
         arg, device=jax.sharding.NamedSharding(global_mesh, arg_spec)
     )
+
+    @self.variant(static_argnums=(1,))
+    def _run(arg, mesh):
+      return self._comp_factory.broadcast_to_placement(arg, _CLIENTS_AXIS, mesh)
+
     with mesh_context(global_mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.broadcast_to_placement(
-          sharded_arg, _CLIENTS_AXIS, mesh
-      )
+      result = _run(sharded_arg, mesh)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     self.assertIsInstance(sharding, jax.sharding.NamedSharding)
@@ -245,14 +266,35 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     # two sets of chips making up the clients axis of the mesh. However, in this
     # case the data making up the broadcasted array should *also* be split along
     # the 'data' dimension; thus each dimension of the global array's shape
-    # should be cut in half, with sub-arrays of shape (_NUM_CLIENTS //
-    # _CLIENTS_AXIS_SIZE,
-    # _DATA_SIZE // _DATA_AXIS_SIZE) living on each of
-    # the 4 chips.
+    # should be cut in half, with sub-arrays of shape
+    #   (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE)
+    # living on each of the 4 chips.
     self.assertEqual(
         sharding.shard_shape(result.shape),
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
+
+  @chex.variants(with_jit=True, without_jit=True)
+  def test_broadcast_with_single_device_sharding(self):
+    mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(AxisType.Explicit, AxisType.Explicit),
+    )
+    arg = jnp.zeros(shape=[_DATA_SIZE])
+    single_device = jax.devices()[0]
+    sharded_arg = jax.device_put(arg, single_device)
+    target_sharding = jax.sharding.NamedSharding(mesh, PSpec())
+    sharded_arg = jax.device_put(sharded_arg, target_sharding)
+
+    @self.variant(static_argnums=(1,))
+    def _run(arg, mesh):
+      return self._comp_factory.broadcast_to_placement(arg, _CLIENTS_AXIS, mesh)
+
+    with mesh_context(mesh, True) as m:
+      result = _run(sharded_arg, m)
+    self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
+    self.assertIsInstance(result.sharding, jax.sharding.NamedSharding)
 
 
 @jax.jit
@@ -278,6 +320,7 @@ class MapFnShardingTest(parameterized.TestCase):
         placements_to_n_elements=self._placements,
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -293,10 +336,13 @@ class MapFnShardingTest(parameterized.TestCase):
         axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
         axis_types=(mesh_axes_type, mesh_axes_type),
     )
-    with mesh_context(mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.map_to_placement(
-          add, (arg1_at_c, arg2_at_c), _CLIENTS_AXIS, mesh
-      )
+
+    @self.variant(static_argnums=(1,))
+    def _run(args, mesh):
+      return self._comp_factory.map_to_placement(add, args, _CLIENTS_AXIS, mesh)
+
+    with mesh_context(mesh, mesh_as_context) as mesh_val:
+      result = _run((arg1_at_c, arg2_at_c), mesh_val)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     # The data should be partitioned across chips.
@@ -308,6 +354,7 @@ class MapFnShardingTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -324,10 +371,15 @@ class MapFnShardingTest(parameterized.TestCase):
         axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
         axis_types=(mesh_axes_type, mesh_axes_type),
     )
-    with mesh_context(mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.map_to_placement(
-          jnp.zeros_like, arg_at_c, _CLIENTS_AXIS, mesh
+
+    @self.variant(static_argnums=(1,))
+    def _run(args, mesh):
+      return self._comp_factory.map_to_placement(
+          jnp.zeros_like, args, _CLIENTS_AXIS, mesh
       )
+
+    with mesh_context(mesh, mesh_as_context) as mesh_val:
+      result = _run(arg_at_c, mesh_val)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     # The data should be partitioned across chips.
@@ -339,6 +391,7 @@ class MapFnShardingTest(parameterized.TestCase):
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -365,28 +418,32 @@ class MapFnShardingTest(parameterized.TestCase):
         sharded_arg2,
         comp_factory=self._comp_factory,
     )
-    with mesh_context(mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.map_to_placement(
-          add, (arg1_at_c, arg2_at_c), _CLIENTS_AXIS, mesh
-      )
+
+    @self.variant(static_argnums=(1,))
+    def _run(args, mesh):
+      return self._comp_factory.map_to_placement(add, args, _CLIENTS_AXIS, mesh)
+
+    with mesh_context(mesh, mesh_as_context) as mesh_val:
+      result = _run((arg1_at_c, arg2_at_c), mesh_val)
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
-    # The data should be partitioned across chips.
     sharding = result.sharding
     self.assertIsInstance(sharding, jax.sharding.NamedSharding)
+    # The data should be partitioned across chips.
     self.assertFalse(sharding.is_fully_replicated)
     # The resulting array here should be fully sharded, just like the argument,
     # by computation-follows-data semantics.
     self.assertEqual(sharding.spec, PSpec(_CLIENTS_AXIS, _DATA_AXIS))
     # Since the argument was fully split across the data and clients axes, the
     # result should be too: each of the 4 chips hosts a sub-array slice of data,
-    # of shape (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE //
-    # _DATA_AXIS_SIZE), so that the entire (global) shape is (_NUM_CLIENTS,
-    # _DATA_SIZE).
+    # of shape
+    #   (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE)
+    # so that the entire (global) shape is (_NUM_CLIENTS, _DATA_SIZE).
     self.assertEqual(
         sharding.shard_shape(result.shape),
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -410,10 +467,13 @@ class MapFnShardingTest(parameterized.TestCase):
     )
     sharded_arg1 = jnp.tile(sharded_arg1, reps=[_NUM_CLIENTS, 1])
     sharded_arg2 = jnp.tile(sharded_arg2, reps=[_NUM_CLIENTS, 1])
-    with mesh_context(mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.map_to_placement(
-          add, (sharded_arg1, sharded_arg2), _CLIENTS_AXIS, mesh
-      )
+
+    @self.variant(static_argnums=(1,))
+    def _run(args, mesh):
+      return self._comp_factory.map_to_placement(add, args, _CLIENTS_AXIS, mesh)
+
+    with mesh_context(mesh, mesh_as_context) as mesh_val:
+      result = _run((sharded_arg1, sharded_arg2), mesh_val)
 
     # Our arguments should _not_ be sharded across the clients axis.
     self.assertEqual(
@@ -424,10 +484,10 @@ class MapFnShardingTest(parameterized.TestCase):
         sharded_arg2.sharding.shard_shape(sharded_arg2.shape),
         (_NUM_CLIENTS, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
-    # But the result should be fully partitioned across chips.
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     self.assertIsInstance(sharding, jax.sharding.NamedSharding)
+    # But the result should be fully partitioned across chips.
     self.assertFalse(sharding.is_fully_replicated)
     # The resulting array here should be fully sharded, _even though the
     # argument was not_, because our vmap impl inserts sharding constraints on
@@ -435,14 +495,15 @@ class MapFnShardingTest(parameterized.TestCase):
     self.assertEqual(sharding.spec, PSpec(_CLIENTS_AXIS, _DATA_AXIS))
     # Since the argument was fully split across the data and clients axes, the
     # result should be too: each of the 4 chips hosts a sub-array slice of data,
-    # of shape (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE //
-    # _DATA_AXIS_SIZE), so that the entire (global) shape is (_NUM_CLIENTS,
-    # _DATA_SIZE).
+    # of shape:
+    #   (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE)
+    # so that the entire (global) shape is (_NUM_CLIENTS, _DATA_SIZE).
     self.assertEqual(
         sharding.shard_shape(result.shape),
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @parameterized.product(
       mesh_as_context=[True, False],
       mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
@@ -476,16 +537,21 @@ class MapFnShardingTest(parameterized.TestCase):
     )
     sharded_arg1 = jnp.tile(sharded_arg1, reps=[_NUM_CLIENTS, 1])
     sharded_arg2 = jnp.tile(sharded_arg2, reps=[_NUM_CLIENTS, 1])
-    with mesh_context(mesh, mesh_as_context) as mesh:
-      result = self._comp_factory.map_to_placement(
-          shard_map_add, (sharded_arg1, sharded_arg2), _CLIENTS_AXIS, mesh
+
+    @self.variant(static_argnums=(1,))
+    def _run(args, mesh):
+      return self._comp_factory.map_to_placement(
+          shard_map_add, args, _CLIENTS_AXIS, mesh
       )
 
-    # The result should be fully partitioned across chips, regardless of input
-    # sharding.
+    with mesh_context(mesh, mesh_as_context) as mesh_val:
+      result = _run((sharded_arg1, sharded_arg2), mesh_val)
+
     self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
     sharding = result.sharding
     self.assertIsInstance(sharding, jax.sharding.NamedSharding)
+    # The result should be fully partitioned across chips, regardless of input
+    # sharding.
     self.assertFalse(sharding.is_fully_replicated)
     # The resulting array here should be fully sharded, since the fed_map
     # implementation respects the _CLIENTS_AXIS sharding and the shard_map
@@ -493,9 +559,9 @@ class MapFnShardingTest(parameterized.TestCase):
     self.assertEqual(sharding.spec, PSpec(_CLIENTS_AXIS, _DATA_AXIS))
     # Since the argument was fully split across the data and clients axes, the
     # result should be too: each of the 4 chips hosts a sub-array slice of data,
-    # of shape (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE //
-    # _DATA_AXIS_SIZE), so that the entire (global) shape is (_NUM_CLIENTS,
-    # _DATA_SIZE).
+    # of shape
+    #   (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE)
+    # so that the entire (global) shape is (_NUM_CLIENTS, _DATA_SIZE).
     self.assertEqual(
         sharding.shard_shape(result.shape),
         (_NUM_CLIENTS // _CLIENTS_AXIS_SIZE, _DATA_SIZE // _DATA_AXIS_SIZE),
@@ -507,5 +573,5 @@ def setUpModule():
   chex.set_n_cpu_devices(8)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
   absltest.main()

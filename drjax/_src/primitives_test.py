@@ -86,22 +86,18 @@ class PrimitivesActingOnArraysTest(parameterized.TestCase):
         {'clients': self._n_clients},
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @run_in_mesh((AxisType.Auto, AxisType.Explicit))
   def test_broadcast_clients_evaluation(self):
-    fn = self._primdefs['broadcast_clients']
+    fn = self.variant(self._primdefs['broadcast_clients'])
     # Check that this function is callable.
     chex.assert_trees_all_close(
         fn(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
-    )
-    # Check that it's jittable.
-    chex.assert_trees_all_close(
-        jax.jit(fn)(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
     )
     # Check that its forward-diffable.
     chex.assert_trees_all_close(
         jax.jacfwd(fn)(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
     )
-
     # Also that it's reverse-diffable.
     chex.assert_trees_all_close(
         jax.jacrev(fn)(jnp.array(1.0)), jnp.ones(shape=[self._n_clients])
@@ -117,17 +113,14 @@ class PrimitivesActingOnArraysTest(parameterized.TestCase):
     rev_mode_jaxpr = jax.make_jaxpr(jax.jacrev(fn))(jnp.array(1.0))
     self.assertTrue(_jaxpr_has_primitive(rev_mode_jaxpr, 'sum_from_clients'))
 
+  @chex.variants(with_jit=True, without_jit=True)
   @run_in_mesh((AxisType.Auto, AxisType.Explicit))
   def test_sum_from_clients_evaluation(self):
-    fn = self._primdefs['sum_from_clients']
+    fn = self.variant(self._primdefs['sum_from_clients'])
     clients_ones = self._primdefs['broadcast_clients'](jnp.ones(shape=[1]))
     # Check that this function is callable.
     chex.assert_trees_all_close(
         fn(clients_ones), jnp.array([1.0 * self._n_clients])
-    )
-    # Check that it's jittable.
-    chex.assert_trees_all_close(
-        jax.jit(fn)(clients_ones), jnp.array([1.0 * self._n_clients])
     )
     # Check that its forward-diffable.
     chex.assert_trees_all_close(
@@ -138,10 +131,12 @@ class PrimitivesActingOnArraysTest(parameterized.TestCase):
         jax.jacrev(fn)(clients_ones), jnp.ones(shape=[1, self._n_clients, 1])
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @run_in_mesh((AxisType.Auto, AxisType.Explicit))
   def test_broadcast_and_sum_from_clients_eval(self):
     fn = self._primdefs['sum_from_clients']
 
+    @self.variant
     def _broadcast_then_sum(x):
       broadcasted_x = self._primdefs['broadcast_clients'](x)
       return fn(broadcasted_x)
@@ -151,7 +146,6 @@ class PrimitivesActingOnArraysTest(parameterized.TestCase):
         jax.jacfwd(_broadcast_then_sum)(jnp.array([1.0])),
         jnp.array([[1.0 * self._n_clients]]),
     )
-
     # And here's reverse-ad.
     chex.assert_trees_all_close(
         jax.jacrev(_broadcast_then_sum)(jnp.array([1.0])),
@@ -169,24 +163,25 @@ class PrimitivesActingOnArraysTest(parameterized.TestCase):
     rev_mode_jaxpr = jax.make_jaxpr(jax.jacrev(fn))(clients_ones)
     self.assertTrue(_jaxpr_has_primitive(rev_mode_jaxpr, 'broadcast_clients'))
 
+  @chex.variants(with_jit=True, without_jit=True)
   @run_in_mesh((AxisType.Auto, AxisType.Explicit))
   def test_mean_from_clients_eval(self):
-    fn = self._primdefs['mean_from_clients']
+    fn = self.variant(self._primdefs['mean_from_clients'])
     clients_ones = jnp.ones(shape=[self._n_clients, 1])
     # Check that this function is callable.
     chex.assert_trees_all_close(fn(clients_ones), jnp.array([1.0]))
-    # Check that it's jittable.
-    chex.assert_trees_all_close(jax.jit(fn)(clients_ones), jnp.array([1.0]))
     # Check that its forward-diffable.
     chex.assert_trees_all_close(
         jax.jacfwd(fn)(clients_ones),
         1 / self._n_clients * jnp.ones(shape=[1, self._n_clients, 1]),
     )
 
+  @chex.variants(with_jit=True, without_jit=True)
   @run_in_mesh((AxisType.Auto, AxisType.Explicit))
   def test_broadcast_then_mean_from_clients_eval(self):
     fn = self._primdefs['mean_from_clients']
 
+    @self.variant
     def _broadcast_then_sum(x):
       broadcasted_x = self._primdefs['broadcast_clients'](x)
       return fn(broadcasted_x)
@@ -243,8 +238,8 @@ class PrimitivesActingOnArraysTest(parameterized.TestCase):
 
     @jax.jit
     def ignore_prim_result(x):
-      # Ignoring one result from this tuple-returning function triggers
-      # reverse evaluation with a symbolic zero cotangent argument.
+      # Ignoring one result from this tuple-returning function triggers reverse
+      # evaluation with a symbolic zero cotangent argument.
       y, _ = duplicate_prim_result(x)
       return y
 
