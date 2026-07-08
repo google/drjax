@@ -48,7 +48,7 @@ def _define_broadcast_prim(
   def broadcast_prim_fn(x, *, mesh=None):
     return broadcast_p.bind(x, mesh=mesh)
 
-  return (broadcast_p, broadcast_prim_fn)
+  return (broadcast_p, broadcast_prim_fn)  # pyrefly: ignore[bad-return]
 
 
 def _register_broadcast_impls(
@@ -249,7 +249,7 @@ def _register_single_arg_agg_impls(
     # Certain jax libs can silently insert the 'batching' dim 'all the way at
     # the front'; we are about to destroy the front axis by agging, so move
     # that puppy to the back. Tell the rest of JAX what happened here.
-    xs = jnp.moveaxis(*xs, *batched_shape, -1)
+    xs = jnp.moveaxis(*xs, *batched_shape, -1)  # pyrefly: ignore[bad-argument-count]
     return agg_prim_fn(xs), len(xs.shape) - 2
 
   # Make sure this can also be batched / mapped. This happens when dispatching
@@ -301,7 +301,7 @@ def _define_and_register_prims_for_placement(
   _register_broadcast_impls(
       broadcast_p,
       broadcast_prim_fn,
-      broadcast_array_eval,
+      broadcast_array_eval,  # pyrefly: ignore[bad-argument-type]
       sum_prim_fn,
       placement_str,
       n_elements,
@@ -317,7 +317,7 @@ def _define_and_register_prims_for_placement(
       mean_p,
       mean_prim_fn,
       impl_defs.mean_from_placement,
-      lambda x: jnp.divide(broadcast_prim_fn(x), n_elements),
+      lambda x: jnp.divide(broadcast_prim_fn(x), n_elements),  # pyrefly: ignore[bad-argument-type]
   )
 
 
