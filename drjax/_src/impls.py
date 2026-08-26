@@ -20,7 +20,6 @@ from typing import Any, TypeGuard
 from absl import logging
 import jax
 from jax import numpy as jnp
-from jax.experimental.shard_alike import shard_alike
 from jax.interpreters import pxla
 from jax.sharding import PartitionSpec as P
 
@@ -99,16 +98,12 @@ def _constrain_alike_if_mesh(
     pspec: jax.sharding.PartitionSpec,
 ) -> PlacedArray:
   """Constrains the non-leading dimensions of `x` to be sharded like `y`."""
+  del y  # Unused.
   if mesh is None:
     return x
 
-  def _shard_slice_like_arg(s):
-    s_sharded, _ = shard_alike(s, y)
-    return s_sharded
-
-  original_dims_constrained = jax.vmap(_shard_slice_like_arg, in_axes=0)(x)
   return jax.lax.with_sharding_constraint(
-      original_dims_constrained, jax.sharding.NamedSharding(mesh, pspec)
+      x, jax.sharding.NamedSharding(mesh, pspec)
   )
 
 
