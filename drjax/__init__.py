@@ -19,7 +19,7 @@ import sys as _sys
 
 from drjax._src import api as _api
 
-__version__ = '0.2.0'
+__version__ = '0.2.1'
 
 # Import the public API.
 broadcast = _api.broadcast
