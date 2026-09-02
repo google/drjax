@@ -275,6 +275,57 @@ class BroadcastShardingBehaviorTest(parameterized.TestCase):
     )
 
   @chex.variants(with_jit=True, without_jit=True)
+  @parameterized.product(
+      mesh_as_context=[True, False],
+      mesh_axes_type=[AxisType.Auto, AxisType.Explicit],
+  )
+  def test_auto_axes_broadcast_runtime_sharding_and_values(
+      self, mesh_as_context, mesh_axes_type
+  ):
+    global_mesh = create_mesh(
+        [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
+        axis_names=[_CLIENTS_AXIS, _DATA_AXIS],
+        axis_types=(mesh_axes_type, mesh_axes_type),
+    )
+    # Non-trivial input data partitioned along 'data' axis
+    input_data = jnp.arange(_DATA_SIZE, dtype=jnp.float32)
+    arg_spec = PSpec(_DATA_AXIS)
+    sharded_arg = jax.device_put(
+        input_data, device=jax.sharding.NamedSharding(global_mesh, arg_spec)
+    )
+
+    @self.variant(static_argnums=(1,))
+    def _run(arg, mesh):
+      return self._comp_factory.broadcast_to_placement(arg, _CLIENTS_AXIS, mesh)
+
+    with mesh_context(global_mesh, mesh_as_context) as mesh:
+      result = _run(sharded_arg, mesh)
+
+    # Output shape matches logical global shape.
+    self.assertEqual(result.shape, (_NUM_CLIENTS, _DATA_SIZE))
+
+    # Output is partitioned across chips, not replicated.
+    self.assertFalse(result.sharding.is_fully_replicated)
+
+    # Partitioner inferred/propagated 'data' sharding to dimension 1.
+    self.assertEqual(result.sharding.spec, PSpec(_CLIENTS_AXIS, _DATA_AXIS))
+
+    # Verify per-device shard slice dimensions.
+    expected_shard_shape = (
+        _NUM_CLIENTS // _CLIENTS_AXIS_SIZE,
+        _DATA_SIZE // _DATA_AXIS_SIZE,
+    )
+    self.assertEqual(
+        result.sharding.shard_shape(result.shape), expected_shard_shape
+    )
+
+    # Numerical correctness: broadcast matches expected tiled array.
+    expected = np.broadcast_to(
+        np.asarray(input_data), (_NUM_CLIENTS, _DATA_SIZE)
+    )
+    np.testing.assert_allclose(np.asarray(result), expected)
+
+  @chex.variants(with_jit=True, without_jit=True)
   def test_broadcast_with_single_device_sharding(self):
     mesh = create_mesh(
         [_CLIENTS_AXIS_SIZE, _DATA_AXIS_SIZE],
